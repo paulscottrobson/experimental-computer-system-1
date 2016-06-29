@@ -1,0 +1,112 @@
+// *************************************************************************************************
+// *************************************************************************************************
+//										8008 CPU Definition
+// *************************************************************************************************
+// *************************************************************************************************
+
+// *************************************************************************************************
+//
+//	@C 		NC NZ P PO C Z M PE from offset
+//	@P 		Port Number (bits 5-1) as hex.
+//	@S 		Register name ABCDEHLM from offset
+//	@R 		Register value ABCDEHL READ(HL()) from offset [ + 3 cycles if last]
+// 	@T 		Tests associated with C
+//	@V 		RST Vector as hex.
+//
+// *************************************************************************************************
+
+:static BYTE8 	A,B,C,D,E,H,L,Halt,Carry,pszValue,PCP;
+:static WORD16 	PC[8],Cycles,temp16;
+
+:static void Reset8008()
+:{
+:	A = B = C = D = E = H = L = Carry = pszValue = PCP = Cycles = 0;						// Clear registers
+:	for (BYTE8 i = 0;i < 8;i++) PC[i] = 0;													// Clear PCTR Vector
+:}
+
+:#define FETCH()	READ(PC[PCP]++)															// Fetch w/out 14 bit wrap
+:#define HL() 		((H << 8)|L)															// HL as 16 bit value.
+
+// *************************************************************************************************
+//								Index Register Instructions (page 8)
+// *************************************************************************************************
+
+C0-C7 	5 	"mov a,@S"		A = @R 															// Move to A
+C8-CF 	5 	"mov b,@S"		B = @R 															// Move to B
+D0-D7 	5 	"mov c,@S"		C = @R 															// Move to C
+D8-DF 	5 	"mov d,@S"		D = @R 															// Move to D
+E0-E7 	5 	"mov e,@S"		E = @R 															// Move to E
+E8-EF 	5 	"mov h,@S"		H = @R 															// Move to H
+F0-F7 	5 	"mov l,@S"		L = @R 															// Move to L
+
+F8-FF 	7 	"mov m,@S"		WRITE(HL(),@R) 													// Move to (HL)
+
+06-36,8	8 	"mvi @S,.1"		@R = FETCH()													// Move immediate reg
+3E 		9 	"mvi m,.1"		WRITE(HL(),FETCH())												// Move immediate memory
+
+08-30,8	5 	"inr @S"		pszValue = ++@R 												// increment reg (not A)
+09-31,8	5 	"dcr @S"		pszValue = --@R 												// decrement reg (not A)
+
+// *************************************************************************************************
+//							Accumulator group instructions (page 8 and 9)
+// *************************************************************************************************
+
+:#define ADD(n1,n2,n3)	{ temp16 = (n1)+(n2)+(n3);pszValue = temp16 & 0xFF;Carry = (temp16 >> 8) & 1; }
+:#define SUB(n1,n2,n3)  ADD(n1,(n2)^0xFF,(n3)^1)
+
+80-87 	5 	"add @S"		A = pszValue;ADD(A,@R,0)										// Add
+88-8F 	5 	"adc @S"		A = pszValue;ADD(A,@R,Carry)									// Add with carry
+90-97 	5 	"sub @S"		A = pszValue;SUB(A,@R,0)										// Subtract
+98-9F 	5 	"sbb @S"		A = pszValue;SUB(A,@R,Carry)									// Subtract with borrow
+A0-A7 	5 	"and @S"		A = pszValue;A & @R;Carry = 0 									// Logical And
+A8-AF 	5 	"xor @S"		A = pszValue;A ^ @R;Carry = 0 									// Logical Xor
+B0-B7 	5 	"ora @S"		A = pszValue;A | @R;Carry = 0 									// Logical Or
+B8-BF 	5 	"cmp @S"		SUB(A,@R,0)														// Compare
+
+04	 	5 	"add .1"		A = pszValue;ADD(A,FETCH(),0)									// Add
+0C 		5 	"adc .1"		A = pszValue;ADD(A,FETCH(),Carry)								// Add with carry
+14 		5 	"sub .1"		A = pszValue;SUB(A,FETCH(),0)									// Subtract
+1C 		5 	"sbb .1"		A = pszValue;SUB(A,FETCH(),Carry)								// Subtract with borrow
+24 		5 	"and .1"		A = pszValue;A & FETCH();Carry = 0 								// Logical And
+2C 		5 	"xor .1"		A = pszValue;A ^ FETCH();Carry = 0 								// Logical Xor
+34 		5 	"ora .1"		A = pszValue;A | FETCH();Carry = 0 								// Logical Or
+3C 		5 	"cmp .1"		SUB(A,FETCH(),0)												// Compare
+
+02 		5 	"rlc" 			Carry = (A >> 7) & 1;A = (A << 1) | Carry 						// Rotate left into carry
+0A 		5 	"rrc"			Carry = A & 1;A = (A >> 1) | (Carry << 7)						// Rotate right into carry
+12 		5 	"ral"			temp16 = (A << 1) | Carry;Carry = (A >> 8) & 1;A = temp16 		// Rotate left through carry
+1A 		5 	"rar"			temp16 = A | (Carry << 8);Carry = A & 1;A = temp16 >> 1 		// Rotate right through carry
+
+// *************************************************************************************************
+//							Program Counter and Stack Control instructions
+// *************************************************************************************************
+
+:#define FETCH16() 	{ temp16 = FETCH();temp16 |= (FETCH() << 8); }							// 16 bit fetch
+:#define JUMP()		PC[PCP] = temp16 & 0x3FFF;												// Jump
+:#define CALL()		{ PC[++PCP] = temp16 & 0x3FFF;PCP &= 7; }								// Call
+:#define RETURN()	PCP = (PCP-1) & 7;														// Return
+
+44-7C,8	11	"jmp .2"		FETCH16();JUMP()												// Jump
+40-78,8 10 	"j@C .2" 		FETCH16();if ((@T) != 0) { JUMP(); }
+
+46-7E,8 11 	"call .2"		FETCH16();CALL()												// Call
+42-7A,8 10 	"c@C .2" 		FETCH16();if ((@T) != 0) { CALL(); }
+	
+03-3B,8 5 	"ret"			RETURN()														// Return
+07-3B,8 4 	"r@C"			if ((@T) != 0) { RETURN(); }
+
+05-3D,8 5 	"rst @V"		temp16 = 0x@V;CALL()											// Reset (short call)
+
+// *************************************************************************************************
+//							Input/Output instructions (8 ports each only)
+// *************************************************************************************************
+
+41-4F,2	8	"inp @P"		A = INPORT@P()													// Input port
+51-5F,2 8 	"out @P"		OUTPORT@P(A)													// Output port
+
+// *************************************************************************************************
+//											Machine instruction
+// *************************************************************************************************
+
+00-01 	4 	"hlt"			Halt = 1														// Stop 8008 CPU
+FF 		4 	"hlt"			Halt = 1
